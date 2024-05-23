@@ -1,0 +1,16 @@
+[workspace]
+
+members = [
+    "mcfly"
+]
+
+[workspace.dependencies]
+age = "0.9"
+age-core = "0.9"
+anyhow = "1.0"
+criterion = "0.4"
+drand_core = "0.0.15"
+getrandom = "0.2"
+hex = "0.4"
+rand = { version = "0.8", default-features = false }
+thiserror = "1.0.57"
