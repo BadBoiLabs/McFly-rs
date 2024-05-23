@@ -203,7 +203,7 @@ impl TryFrom<&[u8]> for GAffine {
 #[derive(Clone, Debug)]
 pub struct Ciphertext {
     pub c0: GAffine,
-    pub c1: PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>,
+    // pub c1: PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>,
     pub cis: Vec<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>>,
 }
 
@@ -236,21 +236,23 @@ pub fn encrypt<I: AsRef<[u8]>, M: AsRef<[u8]>>(
 
     let m = ScalarField::from_le_bytes_mod_order(msg.as_ref());
 
-    let (ss, poly) = shamir_ss(&mut rng, m, threshold, total).unwrap();
+    let (ss, _) = shamir_ss(&mut rng, m, threshold, total).unwrap();
 
-    let share_ids = (1..=6).collect_vec();
-    let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
+    // check if shamir reconstruction works
+    {
+        let share_ids = (1..=6).collect_vec();
+        let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
 
-    let m_rec = cfg_into_iter!(basis)
-        .zip(cfg_into_iter!(ss.iter().take(6).cloned().collect_vec()))
-        .map(|(b, s)| b * s)
-        .sum::<ScalarField>();
+        let m_rec = cfg_into_iter!(basis)
+            .zip(cfg_into_iter!(ss.iter().take(6).cloned().collect_vec()))
+            .map(|(b, s)| b * s)
+            .sum::<ScalarField>();
 
-    assert_eq!(m, m_rec, "m != m_rec");
+        assert_eq!(m, m_rec, "m != m_rec");
+    }
 
-    let c = G2Affine::generator().mul(r);
-
-    let gt_m: PairingOutput<_> = PairingOutput::generator().mul(m);
+    let c0 = G2Affine::generator().mul(r);
+    let c0 = GAffine::G2Affine(c0.into_affine());
 
     // let avk = vks
     //     .iter()
@@ -273,11 +275,11 @@ pub fn encrypt<I: AsRef<[u8]>, M: AsRef<[u8]>>(
         })
         .collect_vec();
 
-    let c1 = cis.iter().fold(PairingOutput::zero(), |acc, c_i| acc + c_i) + gt_m;
+    // let gt_m: PairingOutput<_> = PairingOutput::generator().mul(m);
 
-    let c0 = GAffine::G2Affine(c.into_affine());
+    // let c1 = cis.iter().fold(PairingOutput::zero(), |acc, c_i| acc + c_i) + gt_m;
 
-    Ok(Ciphertext { c0, c1, cis })
+    Ok(Ciphertext { c0, cis })
 }
 
 fn sign<I: AsRef<[u8]>>(id: I, sk: ScalarField) -> Result<GAffine, anyhow::Error> {
@@ -385,11 +387,10 @@ mod tests {
                 .zip(basis)
                 .fold(PairingOutput::zero(), |acc, (c_i, l_i)| {
                     let c_i_l = c_i.mul(l_i);
-                    let d_i = c_i_l - sig_c1;
-                    acc + d_i
+                    acc + c_i_l
                 });
 
-        // let d = ct.c1 - sig_c1;
+        let d = d - sig_c1;
 
         // check dlog
         let m = ScalarField::from_le_bytes_mod_order(msg.as_ref());
