@@ -217,7 +217,7 @@ pub const G2_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 pub const G1_SIZE: usize = 48;
 pub const G2_SIZE: usize = 96;
 
-pub fn encrypt<I: AsRef<[u8]>, M: AsRef<[u8]>>(
+pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>>(
     vks: &[GAffine],
     id: I,
     msg: M,
@@ -241,7 +241,7 @@ pub fn encrypt<I: AsRef<[u8]>, M: AsRef<[u8]>>(
     // check if shamir reconstruction works
     {
         let share_ids = (1..=6).collect_vec();
-        let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
+        let basis = lagrange_basis_at_0_for_all::<ScalarField>(&share_ids).unwrap();
 
         let m_rec = cfg_into_iter!(basis)
             .zip(cfg_into_iter!(ss.iter().take(6).cloned().collect_vec()))
@@ -280,6 +280,38 @@ pub fn encrypt<I: AsRef<[u8]>, M: AsRef<[u8]>>(
     // let c1 = cis.iter().fold(PairingOutput::zero(), |acc, c_i| acc + c_i) + gt_m;
 
     Ok(Ciphertext { c0, cis })
+}
+
+// Returns gt^m (need to calc m = dlog(gt^m))
+pub fn swe_dec(
+    ct: &Ciphertext,
+    sigmas: impl IntoIterator<Item = GAffine>,
+    share_ids: &[usize],
+) -> anyhow::Result<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>, anyhow::Error> {
+    let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
+    let sigma_thres = sigmas.into_iter().zip_eq(basis.iter().cloned()).fold(
+        GAffine::G1Affine(G1Affine::zero()),
+        |acc, (sig, l)| {
+            let sig_l = sig.mul(l);
+            acc.add(&sig_l)
+        },
+    );
+
+    let sig_c1 = sigma_thres.pairing(&ct.c0).unwrap();
+
+    // let sig_c1 = sigmas.iter().fold(PairingOutput::zero(), |acc, sig_i| acc + sig_i.pairing(&ct.c0).unwrap());
+    // let d = ct.cis.iter().fold(PairingOutput::zero(), |acc, ci| acc + (ci - sig_c1));
+    let cis_l = share_ids
+        .iter()
+        .zip_eq(basis)
+        .fold(PairingOutput::zero(), |acc, (i, l_i)| {
+            let c_i_l = ct.cis[i - 1].mul(l_i);
+            acc + c_i_l
+        });
+
+    let d = cis_l - sig_c1;
+
+    Ok(d)
 }
 
 fn sign<I: AsRef<[u8]>>(id: I, sk: ScalarField) -> Result<GAffine, anyhow::Error> {
@@ -347,50 +379,14 @@ mod tests {
         let msg = b"t";
         let id = b"88";
 
-        let ct = encrypt(&vks, id, msg, T, N).unwrap();
+        let ct = swe_enc(&vks, id, msg, T, N).unwrap();
 
         // sign
 
-        let sigmas = sks.map(|sk| sign(id, sk).unwrap());
-
         let share_ids = (1..=T + 1).collect_vec();
-        let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
-        let sigma_thres = sigmas
-            .iter()
-            .take(T + 1)
-            .zip_eq(basis.iter().cloned())
-            .fold(GAffine::G1Affine(G1Affine::zero()), |acc, (sig, l)| {
-                let sig_l = sig.mul(l);
-                acc.add(&sig_l)
-            });
+        let sigmas = share_ids.iter().map(|i| sign(id, sks[i - 1]).unwrap());
 
-        // let sigma_aggr = sigmas
-        //     .iter()
-        //     .fold(GAffine::G1Affine(G1Affine::zero()), |acc, sig| {
-        //         acc.add(&sig)
-        //     });
-
-        // assert_eq!(sigma_thres, sigma_aggr, "sigma_thres != sigma_aggr");
-
-        // decrypt
-
-        // let domain = GeneralEvaluationDomain::<ScalarField>::new(N).unwrap();
-        // let lagrange_coeffs = domain.evaluate_all_lagrange_coefficients()
-        let sig_c1 = sigma_thres.pairing(&ct.c0).unwrap();
-
-        // let sig_c1 = sigmas.iter().fold(PairingOutput::zero(), |acc, sig_i| acc + sig_i.pairing(&ct.c0).unwrap());
-        // let d = ct.cis.iter().fold(PairingOutput::zero(), |acc, ci| acc + (ci - sig_c1));
-        let d =
-            ct.cis
-                .iter()
-                .take(T + 1)
-                .zip(basis)
-                .fold(PairingOutput::zero(), |acc, (c_i, l_i)| {
-                    let c_i_l = c_i.mul(l_i);
-                    acc + c_i_l
-                });
-
-        let d = d - sig_c1;
+        let d = swe_dec(&ct, sigmas, &share_ids).unwrap();
 
         // check dlog
         let m = ScalarField::from_le_bytes_mod_order(msg.as_ref());
@@ -401,9 +397,9 @@ mod tests {
 }
 
 pub fn lagrange_basis_at_0_for_all<F: PrimeField>(
-    x_coords: Vec<usize>,
+    x_coords: &[usize],
 ) -> Result<Vec<F>, anyhow::Error> {
-    let x = cfg_into_iter!(x_coords.as_slice())
+    let x = cfg_into_iter!(x_coords)
         .map(|x| F::from(*x as u64))
         .collect::<Vec<_>>();
     // Ensure no x-coordinate can be 0 since we are evaluating basis polynomials at 0
