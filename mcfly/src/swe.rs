@@ -254,16 +254,6 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>>(
     let c0 = G2Affine::generator().mul(r);
     let c0 = GAffine::G2Affine(c0.into_affine());
 
-    // let avk = vks
-    //     .iter()
-    //     .fold(GAffine::G2Affine(G2Affine::zero()), |acc, vk| acc.add(vk));
-
-    // let c1 = {
-    //     let h_t_vk = avk.projective_pairing(id.as_ref()).unwrap();
-    //     let h_t_vk_r = h_t_vk.mul(r);
-    //     h_t_vk_r
-    // };
-
     let cis = vks
         .iter()
         .zip(ss)
@@ -274,10 +264,6 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>>(
             h_t_vk_r + gt_si
         })
         .collect_vec();
-
-    // let gt_m: PairingOutput<_> = PairingOutput::generator().mul(m);
-
-    // let c1 = cis.iter().fold(PairingOutput::zero(), |acc, c_i| acc + c_i) + gt_m;
 
     Ok(Ciphertext { c0, cis })
 }
@@ -299,8 +285,6 @@ pub fn swe_dec(
 
     let sig_c1 = sigma_thres.pairing(&ct.c0).unwrap();
 
-    // let sig_c1 = sigmas.iter().fold(PairingOutput::zero(), |acc, sig_i| acc + sig_i.pairing(&ct.c0).unwrap());
-    // let d = ct.cis.iter().fold(PairingOutput::zero(), |acc, ci| acc + (ci - sig_c1));
     let cis_l = share_ids
         .iter()
         .zip_eq(basis)
