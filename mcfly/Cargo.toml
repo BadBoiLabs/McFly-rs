@@ -1,0 +1,47 @@
+[package]
+name = "mcfly"
+description = "Rust encryption library for practical time-lock encryption."
+version = "0.0.5"
+authors = ["Thibault Meunier <crates@thibault.uk>"]
+edition = "2021"
+readme = "./README.md"
+homepage = "https://github.com/thibmeu/tlock-rs"
+repository = "https://github.com/thibmeu/tlock-rs"
+keywords = ["tlock", "cryptography", "encryption"]
+categories = ["cryptography"]
+license = "MIT"
+
+[dependencies]
+anyhow = { workspace = true }
+ark-bls12-381 = "0.4.0"
+ark-ec = "0.4.2"
+ark-ff = "0.4.2"
+ark-serialize = "0.4.2"
+ark-poly = "0.4.2"
+ark-std = { version = "0.4", features = ["print-trace"] }
+itertools = "0.10.5"
+rand = { workspace = true, default-features = false, features = ["getrandom"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_with = "2.3.3"
+sha2 = "0.10.8"
+thiserror = { workspace = true }
+tracing = "0.1.40"
+
+[target.'cfg(wasm32)'.dependencies]
+getrandom = { workspace = true, features = ["js"] }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["html_reports"] }
+drand_core = { workspace = true }
+hex = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+pprof = { version = "0.11", features = ["criterion", "flamegraph"] }
+
+[features]
+default = ["rfc9380"]
+rfc9380 = []
+
+[[bench]]
+name = "encrypt_decrypt"
+harness = false
