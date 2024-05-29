@@ -9,7 +9,7 @@ use ark_ec::{
     pairing::{Pairing, PairingOutput},
     AffineRepr, CurveGroup, Group,
 };
-use ark_ff::{field_hashers::DefaultFieldHasher, PrimeField, UniformRand, Zero};
+use ark_ff::{field_hashers::DefaultFieldHasher, BigInt, PrimeField, UniformRand, Zero};
 use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{cfg_into_iter, cfg_iter, vec::Vec};
@@ -19,7 +19,7 @@ use rand::{distributions::Uniform, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_with::DeserializeAs;
 use sha2::{digest::Update, Digest, Sha256};
-use std::{marker::PhantomData, ops::Mul};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData, ops::Mul};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -269,7 +269,7 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>>(
 }
 
 // Returns gt^m (need to calc m = dlog(gt^m))
-pub fn swe_dec(
+pub fn swe_dec_dlog(
     ct: &Ciphertext,
     sigmas: impl IntoIterator<Item = GAffine>,
     share_ids: &[usize],
@@ -296,6 +296,41 @@ pub fn swe_dec(
     let d = cis_l - sig_c1;
 
     Ok(d)
+}
+
+// Returns gt^m (need to calc m = dlog(gt^m))
+pub fn swe_dec(
+    ct: &Ciphertext,
+    sigmas: impl IntoIterator<Item = GAffine>,
+    share_ids: &[usize],
+    bits_babygiant: usize,
+    total_bits: usize,
+    dlp_map: HashMap<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>, u64>,
+) -> anyhow::Result<u64, anyhow::Error> {
+    let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
+    let sigma_thres = sigmas.into_iter().zip_eq(basis.iter().cloned()).fold(
+        GAffine::G1Affine(G1Affine::zero()),
+        |acc, (sig, l)| {
+            let sig_l = sig.mul(l);
+            acc.add(&sig_l)
+        },
+    );
+
+    let sig_c1 = sigma_thres.pairing(&ct.c0).unwrap();
+
+    let cis_l = share_ids
+        .iter()
+        .zip_eq(basis)
+        .fold(PairingOutput::zero(), |acc, (i, l_i)| {
+            let c_i_l = ct.cis[i - 1].mul(l_i);
+            acc + c_i_l
+        });
+
+    let d = cis_l - sig_c1;
+
+    let msg = babygiant(d, bits_babygiant, total_bits, dlp_map);
+
+    Ok(msg)
 }
 
 fn sign<I: AsRef<[u8]>>(id: I, sk: ScalarField) -> Result<GAffine, anyhow::Error> {
@@ -348,6 +383,7 @@ pub fn shamir_ss<R: RngCore, F: PrimeField>(
 #[cfg(test)]
 mod tests {
     use ark_ff::Zero;
+    use ark_std::{end_timer, start_timer};
 
     use super::*;
 
@@ -370,13 +406,45 @@ mod tests {
         let share_ids = (1..=T + 1).collect_vec();
         let sigmas = share_ids.iter().map(|i| sign(id, sks[i - 1]).unwrap());
 
-        let d = swe_dec(&ct, sigmas, &share_ids).unwrap();
+        let d = swe_dec_dlog(&ct, sigmas, &share_ids).unwrap();
 
         // check dlog
         let m = ScalarField::from_le_bytes_mod_order(msg.as_ref());
         let d_test = PairingOutput::generator().mul(m);
 
-        assert_eq!(d, d_test, "d != d_test");
+        assert_eq!(d, d_test, "dec_dlog(enc(m)) != gt^m");
+    }
+
+    #[test]
+    fn test_mcfly_full() {
+        const N: usize = 10;
+        const T: usize = 5;
+        const BITS_BG: usize = 16;
+        const BITS_TOTAL: usize = 24;
+        let mut rng = rand::thread_rng();
+
+        let sks = [0; N].map(|_| ScalarField::from_le_bytes_mod_order(&rng.gen::<[u8; 32]>()));
+        let vks = sks.map(|sk| GAffine::G2Affine(G2Affine::generator().mul(sk).into_affine()));
+
+        let msg = b"t";
+        let id = b"88";
+
+        let ct = swe_enc(&vks, id, msg, T, N).unwrap();
+
+        // sign
+
+        let share_ids = (1..=T + 1).collect_vec();
+        let sigmas = share_ids.iter().map(|i| sign(id, sks[i - 1]).unwrap());
+
+        let timer = start_timer!(|| "babygiant pre-compute");
+        let dlp_map = babygiant_precomp(BITS_BG);
+        end_timer!(timer);
+        let timer = start_timer!(|| "swe decrtypt");
+
+        let m = swe_dec(&ct, sigmas, &share_ids, BITS_BG, BITS_TOTAL, dlp_map).unwrap();
+        end_timer!(timer);
+
+        assert_eq!(m, msg[0] as u64, "dec(enc(m)) != m");
     }
 }
 
@@ -412,33 +480,40 @@ pub fn lagrange_basis_at_0_for_all<F: PrimeField>(
     Ok(r)
 }
 
-// pub fn bsgs(
-//     p: i32,
-//     a: FiniteBody<i32>,
-//     b: FiniteBody<i32>,
-//     g: PointEllipticCurve<FiniteBody<i32>>,
-//     k_g: PointEllipticCurve<FiniteBody<i32>>,
-// ) -> i32 {
-//     let m = ((p) as f64).sqrt().ceil() as i32;
+pub fn babygiant_precomp(
+    bits: usize,
+) -> HashMap<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>, u64> {
+    let n = 1u64 << bits;
 
-//     // baby_steps
-//     let mut baby_steps: HashMap<PointEllipticCurve<FiniteBody<i32>>, i32> = HashMap::new();
-//     let mut res = PointEllipticCurve::new_inf(a, b);
-//     for b in 0..m {
-//         baby_steps.insert(res, b);
-//         res = g * (b as usize);
-//     }
+    let mut res = HashMap::new();
+    let mut tmp = PairingOutput::generator();
+    for i in 1..=n {
+        res.insert(tmp, i);
+        tmp += PairingOutput::generator();
+    }
+    res
+}
 
-//     // giant_steps
-//     let mut giant_steps: HashMap<PointEllipticCurve<FiniteBody<i32>>, i32> = HashMap::new();
-//     let mut k = 0;
-//     for a in 0..m {
-//         let res = (k_g + (-(g * ((a * m) as usize))).unwrap()).unwrap();
-//         giant_steps.insert(res, a);
-//         if baby_steps.contains_key(&res) {
-//             k = a * m + baby_steps.get(&res).unwrap() - 1;
-//             break;
-//         }
-//     }
-//     k
-// }
+pub fn babygiant(
+    d: PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>,
+    bits_babygiant: usize,
+    total_bits: usize,
+    dlp_map: HashMap<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>, u64>,
+) -> u64 {
+    let bits_diff = total_bits - bits_babygiant;
+
+    let n = 1u64 << bits_babygiant;
+
+    let mut x = d;
+    let tmp = PairingOutput::generator().mul_bigint(BigInt::<1>::from(n));
+
+    let k = 1u64 << bits_diff;
+    for i in 0..=k {
+        if dlp_map.contains_key(&x) {
+            return dlp_map.get(&x).unwrap() + i * n
+        }
+        x += tmp;
+    }
+    
+    0
+}

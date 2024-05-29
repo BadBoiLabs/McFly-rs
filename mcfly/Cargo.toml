@@ -18,9 +18,9 @@ ark-ec = "0.4.2"
 ark-ff = "0.4.2"
 ark-serialize = "0.4.2"
 ark-poly = "0.4.2"
-ark-std = "0.4"
+ark-std = { version = "0.4", features = ["print-trace"] }
 itertools = "0.10.5"
-rand = { workspace = true, default-features = false, features = ["getrandom"]}
+rand = { workspace = true, default-features = false, features = ["getrandom"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_with = "2.3.3"
 sha2 = "0.10.8"
