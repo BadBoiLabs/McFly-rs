@@ -477,7 +477,7 @@ mod tests {
         const N: usize = 10;
         const T: usize = 5;
         const BITS_BG: usize = 16;
-        const BITS_TOTAL: usize = 16; // should be possible to use BITS_TOTAL = 24 but babygiant algo fails
+        const BITS_TOTAL: usize = 16; // TODO: it should be possible to use BITS_TOTAL = 24 but babygiant algo fails to recover dlog
         const BLOCK_SIZE: usize = BITS_TOTAL / 8;
         let mut rng = ark_std::test_rng();
 
