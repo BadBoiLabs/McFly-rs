@@ -1,22 +1,28 @@
 //! # mcfly
 
 mod swe;
+mod common;
 
-use crate::swe::Ciphertext;
-
-use swe::GAffine;
-use sha2::Digest;
 use std::io;
 use thiserror::Error;
-use tracing::info_span;
 
 #[derive(Error, Debug)]
 pub enum TLockError {
     #[error(transparent)]
-    IBE(#[from] crate::swe::IBEError),
+    IBE(#[from] crate::common::SWEError),
     #[error(transparent)]
     IOError(#[from] io::Error),
 }
+
+#[cfg(feature = "rfc9380")]
+pub const G1_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_";
+#[cfg(not(feature = "rfc9380"))]
+pub const G1_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+pub const G2_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+
+pub const G1_SIZE: usize = 48;
+pub const G2_SIZE: usize = 96;
+
 
 // /// Encrypt 16 bytes using tlock encryption scheme.
 // ///
@@ -43,8 +49,8 @@ pub enum TLockError {
 //     let mut message = [0; 16];
 //     src.read(&mut message).map_err(TLockError::IOError)?;
 
-//     let ct = info_span!("ibe::encryption")
-//         .in_scope(|| time_lock(public_key_bytes, round_number, message))?;
+//     let ct = info_span!("swe::encryption")
+//         .in_scope(|| swe::encrypt(public_key_bytes, round_number, message))?;
 
 //     dst.write_all(&ct.u.to_compressed()?)?;
 //     dst.write_all(&ct.v)?;
@@ -52,7 +58,7 @@ pub enum TLockError {
 
 //     Ok(())
 // }
-
+//
 // /// Decrypt 16 bytes using tlock encryption scheme.
 // ///
 // /// tlock relies on BLS, content private key is a BLS signature.
@@ -109,21 +115,6 @@ pub enum TLockError {
 //     }
 
 //     dst.write_all(&pt).map_err(TLockError::IOError)
-// }
-
-// fn time_lock<M: AsRef<[u8]>>(
-//     public_key_bytes: &[u8],
-//     round_number: u64,
-//     message: M,
-// ) -> Result<ibe::Ciphertext, anyhow::Error> {
-//     let public_key = GAffine::try_from(public_key_bytes)?;
-//     let id = {
-//         let mut hash = sha2::Sha256::new();
-//         hash.update(round_number.to_be_bytes());
-//         &hash.finalize().to_vec()[0..32]
-//     };
-
-//     ibe::encrypt(public_key, id, message)
 // }
 
 // fn time_unlock(signature: &[u8], c: &Ciphertext) -> Result<Vec<u8>, TLockError> {
