@@ -14,7 +14,7 @@ use ark_ff::{
     field_hashers::DefaultFieldHasher, BigInt, FpConfig, One, PrimeField, UniformRand, Zero,
 };
 use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read};
 use ark_std::{
     cfg_into_iter, cfg_iter,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
@@ -250,6 +250,7 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>, R: RngCore>(
     threshold: usize,
     total: usize,
     rng: &mut R,
+    block_size: usize,
 ) -> anyhow::Result<Ciphertext, anyhow::Error> {
     assert!(
         msg.as_ref().len() <= BLOCK_SIZE,
@@ -261,8 +262,8 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>, R: RngCore>(
 
     let m_packed: Vec<ScalarField> = msg
         .as_ref()
-        .chunks(32)
-        .map(|chunk| ScalarField::from_le_bytes_mod_order(chunk))
+        .chunks(block_size)
+        .map(ScalarField::from_le_bytes_mod_order)
         .collect();
 
     // let domain = vks
@@ -289,10 +290,9 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>, R: RngCore>(
         })
         .collect_vec();
 
-    let cdashjs = vks
+    let cdashjs = m_packed
         .iter()
-        .zip(m_packed)
-        .map(|(vk_j, m_i)| {
+        .map(|m_i| {
             let g2_r0 = GAffine::G2Affine(G2Affine::generator().mul(r0).into_affine());
             let h_t_g2_r0 = g2_r0.projective_pairing(id.as_ref()).unwrap();
             let gt_mi = PairingOutput::generator().mul(m_i);
@@ -323,7 +323,7 @@ pub fn swe_dec_dlog(
     //     .collect::<anyhow::Result<Vec<_>, _>>()?;
 
     let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
-    
+
     let sigma_thres = sigmas.into_iter().zip_eq(basis.iter().cloned()).fold(
         GAffine::G1Affine(G1Affine::zero()),
         |acc, (sig, l)| {
@@ -355,18 +355,22 @@ pub fn swe_dec_dlog(
 
 pub fn swe_dec(
     ct: Ciphertext,
-    vks: &[GAffine],
     sigmas: impl IntoIterator<Item = GAffine>,
     share_ids: &[usize],
     bits_babygiant: usize,
     total_bits: usize,
     dlp_map: HashMap<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>, u64>,
-) -> anyhow::Result<Vec<u64>, anyhow::Error> {
+) -> anyhow::Result<Vec<u8>, anyhow::Error> {
     let dis = swe_dec_dlog(ct, sigmas, share_ids)?;
 
     let msg = dis
         .into_iter()
-        .map(|d| babygiant(d, bits_babygiant, total_bits, &dlp_map))
+        .flat_map(|d| {
+            babygiant(d, bits_babygiant, total_bits, &dlp_map)
+                .to_le_bytes()
+                .into_iter()
+                .take(total_bits / 8)
+        })
         .collect();
 
     Ok(msg)
@@ -428,7 +432,6 @@ fn hash_pk_to_fr(p: &GAffine) -> anyhow::Result<ScalarField, IBEError> {
 
 #[cfg(test)]
 mod tests {
-    use ark_ff::Zero;
     use ark_std::{end_timer, start_timer};
 
     use super::*;
@@ -437,62 +440,73 @@ mod tests {
     fn test_mcfly_simple() {
         const N: usize = 10;
         const T: usize = 5;
+        const BLOCK_SIZE: usize = 4;
+
         let mut rng = ark_std::test_rng();
 
         let sks = [0; N].map(|_| ScalarField::from_le_bytes_mod_order(&rng.gen::<[u8; 32]>()));
         let vks = sks.map(|sk| GAffine::G2Affine(G2Affine::generator().mul(sk).into_affine()));
 
-        let msg = b"t";
+        let msg = b"test_test";
         let id = b"88";
 
-        let ct = swe_enc(&vks, id, msg, T, N, &mut rng).unwrap();
+        println!("msg: {:?}", msg);
+        
+        let ct = swe_enc(&vks, id, msg, T, N, &mut rng, BLOCK_SIZE).unwrap();
 
         // sign
 
         let share_ids = (1..=T + 1).collect_vec();
         let sigmas = share_ids.iter().map(|i| sign(id, sks[i - 1]).unwrap());
 
-        let dis = swe_dec_dlog(ct, sigmas, &share_ids).unwrap();
-        let d = dis[0];
+        let d = swe_dec_dlog(ct, sigmas, &share_ids).unwrap();
 
         // check dlog
-        let m = ScalarField::from_le_bytes_mod_order(msg.as_ref());
-        let d_test = PairingOutput::generator().mul(m);
+        let m_packed: Vec<ScalarField> = msg
+            .as_ref()
+            .chunks(BLOCK_SIZE)
+            .map(ScalarField::from_le_bytes_mod_order)
+            .collect();
+        let d_test = m_packed.iter().map(|m| PairingOutput::generator().mul(m)).collect_vec();
 
         assert_eq!(d, d_test, "dec_dlog(enc(m)) != gt^m");
     }
 
-    // #[test]
-    // fn test_mcfly_full() {
-    //     const N: usize = 10;
-    //     const T: usize = 5;
-    //     const BITS_BG: usize = 16;
-    //     const BITS_TOTAL: usize = 24;
-    //     let mut rng = rand::thread_rng();
+    #[test]
+    fn test_mcfly_full() {
+        const N: usize = 10;
+        const T: usize = 5;
+        const BITS_BG: usize = 16;
+        const BITS_TOTAL: usize = 16; // should be possible to use BITS_TOTAL = 24 but babygiant algo fails
+        const BLOCK_SIZE: usize = BITS_TOTAL / 8;
+        let mut rng = ark_std::test_rng();
 
-    //     let sks = [0; N].map(|_| ScalarField::from_le_bytes_mod_order(&rng.gen::<[u8; 32]>()));
-    //     let vks = sks.map(|sk| GAffine::G2Affine(G2Affine::generator().mul(sk).into_affine()));
+        let sks = [0; N].map(|_| ScalarField::from_le_bytes_mod_order(&rng.gen::<[u8; 32]>()));
+        let vks = sks.map(|sk| GAffine::G2Affine(G2Affine::generator().mul(sk).into_affine()));
 
-    //     let msg = b"t";
-    //     let id = b"88";
+        let msg = b"test_test";
+        let id = b"88";
 
-    //     let ct = swe_enc(&vks, id, msg, T, N).unwrap();
+        let ct = swe_enc(&vks, id, msg, T, N, &mut rng, BLOCK_SIZE).unwrap();
 
-    //     // sign
+        // sign
 
-    //     let share_ids = (1..=T + 1).collect_vec();
-    //     let sigmas = share_ids.iter().map(|i| sign(id, sks[i - 1]).unwrap());
+        let share_ids = (1..=T + 1).collect_vec();
+        let sigmas = share_ids.iter().map(|i| sign(id, sks[i - 1]).unwrap());
 
-    //     let timer = start_timer!(|| "babygiant pre-compute");
-    //     let dlp_map = babygiant_precomp(BITS_BG);
-    //     end_timer!(timer);
-    //     let timer = start_timer!(|| "swe decrtypt");
+        let timer = start_timer!(|| "babygiant pre-compute");
+        let dlp_map = babygiant_precomp(BITS_BG);
+        end_timer!(timer);
+        let timer = start_timer!(|| "swe decrtypt");
 
-    //     let m = swe_dec(&ct, sigmas, &share_ids, BITS_BG, BITS_TOTAL, dlp_map).unwrap();
-    //     end_timer!(timer);
+        let m = swe_dec(ct, sigmas, &share_ids, BITS_BG, BITS_TOTAL, dlp_map).unwrap();
+        end_timer!(timer);
 
-    //     assert_eq!(m, msg[0] as u64, "dec(enc(m)) != m");
-    // }
+        let mut msg_padded = msg.to_vec();
+        msg_padded.resize(msg.len().div_ceil(BLOCK_SIZE) * BLOCK_SIZE, b'\0');
+
+        assert_eq!(m, msg_padded, "dec(enc(m)) != m");
+    }
 }
 
 pub fn lagrange_basis_at_0_for_all<F: PrimeField>(
