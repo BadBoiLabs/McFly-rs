@@ -21,8 +21,8 @@ use ark_std::{
     vec::Vec,
 };
 use itertools::Itertools;
-use rand::Rng;
 use rand::{distributions::Uniform, RngCore};
+use rand::{CryptoRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_with::DeserializeAs;
 use sha2::{digest::Update, Digest, Sha256};
@@ -243,22 +243,21 @@ pub const G2_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 pub const G1_SIZE: usize = 48;
 pub const G2_SIZE: usize = 96;
 
-pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>>(
+pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>, R: RngCore>(
     vks: &[GAffine],
     id: I,
     msg: M,
     threshold: usize,
     total: usize,
+    rng: &mut R,
 ) -> anyhow::Result<Ciphertext, anyhow::Error> {
     assert!(
         msg.as_ref().len() <= BLOCK_SIZE,
         "plaintext too long for the block size"
     );
 
-    let mut rng = rand::thread_rng();
-
-    let r = ScalarField::rand(&mut rng);
-    let r0 = ScalarField::rand(&mut rng);
+    let r = ScalarField::rand(rng);
+    let r0 = ScalarField::rand(rng);
 
     let m_packed: Vec<ScalarField> = msg
         .as_ref()
@@ -266,46 +265,15 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>>(
         .map(|chunk| ScalarField::from_le_bytes_mod_order(chunk))
         .collect();
 
-    let domain = vks
-        .iter()
-        .map(hash_pk_to_fr)
-        .collect::<anyhow::Result<Vec<_>, _>>()?;
+    // let domain = vks
+    //     .iter()
+    //     .map(hash_pk_to_fr)
+    //     .collect::<anyhow::Result<Vec<_>, _>>()?;
 
-    let (ss, _) = shamir_ss(&mut rng, r0, threshold, total, None).unwrap();
-
-    // let mut coeffs = Vec::with_capacity(threshold);
-    // coeffs.append(&mut (0..threshold - 1).map(|_| ScalarField::rand(&mut rng)).collect());
-    // coeffs.insert(0, r);
-    // let poly = DensePolynomial::from_coefficients_vec(coeffs);
-
-    // check if shamir reconstruction works
-    {
-        let share_ids = (1..=6).collect_vec();
-        // let mut basis = vec![];
-
-        // for i in 0..vks.len() {
-        //     let mut tmp_l: ScalarField = ScalarField::one();
-        //     for j in 0..vks.len() {
-        //         if i != j {
-        //             tmp_l = domain[j].neg().div(&(domain[i] - domain[j]));
-        //         }
-        //     }
-        //     basis.push(tmp_l);
-        // }
-    
-        // let basis = share_ids.iter().map(|i| basis[i - 1]).collect_vec();
-        let basis = lagrange_basis_at_0_for_all::<ScalarField>(&share_ids).unwrap();
-
-        let r0_rec = cfg_into_iter!(basis)
-            .zip(cfg_into_iter!(ss.iter().take(6).cloned().collect_vec()))
-            .map(|(b, s)| b * s)
-            .sum::<ScalarField>();
-
-        assert_eq!(r0, r0_rec, "r0 != r0_rec");
-    }
+    let (ss, _) = shamir_ss(rng, r0, threshold, total, None).unwrap();
 
     let c = G2Affine::generator().mul(r).into_affine();
-    let h = G2Affine::rand(&mut rng);
+    let h = G2Affine::rand(rng);
     let c0 = {
         let c0 = h.mul(r) + G2Affine::generator().mul(r);
         c0.into_affine()
@@ -345,31 +313,17 @@ pub fn swe_enc<I: AsRef<[u8]>, M: AsRef<[u8]>>(
 // Returns gt^m (need to calc m = dlog(gt^m))
 pub fn swe_dec_dlog(
     ct: Ciphertext,
-    vks: &[GAffine],
     sigmas: impl IntoIterator<Item = GAffine>,
     share_ids: &[usize],
 ) -> anyhow::Result<Vec<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>>, anyhow::Error>
 {
-    let domain = vks
-        .iter()
-        .map(hash_pk_to_fr)
-        .collect::<anyhow::Result<Vec<_>, _>>()?;
-
-    // let mut basis = vec![];
-
-    // for i in 0..vks.len() {
-    //     let mut tmp_l: ScalarField = ScalarField::one();
-    //     for j in 0..vks.len() {
-    //         if i != j {
-    //             tmp_l = domain[j].neg().div(&(domain[i] - domain[j]));
-    //         }
-    //     }
-    //     basis.push(tmp_l);
-    // }
-
-    // let basis = share_ids.iter().map(|i| basis[i - 1]).collect_vec();
+    // let domain = vks
+    //     .iter()
+    //     .map(hash_pk_to_fr)
+    //     .collect::<anyhow::Result<Vec<_>, _>>()?;
 
     let basis = lagrange_basis_at_0_for_all::<ScalarField>(share_ids).unwrap();
+    
     let sigma_thres = sigmas.into_iter().zip_eq(basis.iter().cloned()).fold(
         GAffine::G1Affine(G1Affine::zero()),
         |acc, (sig, l)| {
@@ -408,7 +362,7 @@ pub fn swe_dec(
     total_bits: usize,
     dlp_map: HashMap<PairingOutput<ark_ec::bls12::Bls12<ark_bls12_381::Config>>, u64>,
 ) -> anyhow::Result<Vec<u64>, anyhow::Error> {
-    let dis = swe_dec_dlog(ct, vks, sigmas, share_ids)?;
+    let dis = swe_dec_dlog(ct, sigmas, share_ids)?;
 
     let msg = dis
         .into_iter()
@@ -458,6 +412,7 @@ pub fn shamir_ss<R: RngCore, F: PrimeField>(
     let mut coeffs = Vec::with_capacity(threshold);
     coeffs.append(&mut (0..threshold - 1).map(|_| F::rand(rng)).collect());
     coeffs.insert(0, secret);
+
     let poly = DensePolynomial::from_coefficients_vec(coeffs);
     let shares = (1..=total)
         .map(|i| poly.evaluate(&domain.as_ref().map_or(F::from(i as u64), |d| d[i - 1])))
@@ -482,7 +437,7 @@ mod tests {
     fn test_mcfly_simple() {
         const N: usize = 10;
         const T: usize = 5;
-        let mut rng = rand::thread_rng();
+        let mut rng = ark_std::test_rng();
 
         let sks = [0; N].map(|_| ScalarField::from_le_bytes_mod_order(&rng.gen::<[u8; 32]>()));
         let vks = sks.map(|sk| GAffine::G2Affine(G2Affine::generator().mul(sk).into_affine()));
@@ -490,14 +445,14 @@ mod tests {
         let msg = b"t";
         let id = b"88";
 
-        let ct = swe_enc(&vks, id, msg, T, N).unwrap();
+        let ct = swe_enc(&vks, id, msg, T, N, &mut rng).unwrap();
 
         // sign
 
         let share_ids = (1..=T + 1).collect_vec();
         let sigmas = share_ids.iter().map(|i| sign(id, sks[i - 1]).unwrap());
 
-        let dis = swe_dec_dlog(ct, &vks, sigmas, &share_ids).unwrap();
+        let dis = swe_dec_dlog(ct, sigmas, &share_ids).unwrap();
         let d = dis[0];
 
         // check dlog
@@ -572,35 +527,25 @@ pub fn lagrange_basis_at_0_for_all<F: PrimeField>(
     Ok(r)
 }
 
-// pub fn lagrange_basis_at_domain<F: PrimeField>(
-//     x: &[F],
-//     share_ids: &[usize],
-// ) -> Result<Vec<F>, anyhow::Error> {
-//     // Ensure no x-coordinate can be 0 since we are evaluating basis polynomials at 0
-//     if cfg_iter!(x).any(|x_i| x_i.is_zero()) {
-//         return Err(anyhow!("XCordCantBeZero"));
-//     }
+pub fn lagrange_basis_at_domain<F: PrimeField>(
+    domain: &[F],
+    x_coords: &[usize],
+) -> Result<Vec<F>, anyhow::Error> {
+    let total = domain.len();
+    let mut basis = vec![];
 
-//     // Product of all `x`, i.e. \prod_{i}(x_i}
-//     let product = cfg_iter!(x).product::<F>();
+    for i in 0..total {
+        let mut tmp_l: F = F::one();
+        for j in 0..total {
+            if i != j {
+                tmp_l *= domain[i].neg().div(&(domain[j] - domain[i]));
+            }
+        }
+        basis.push(tmp_l);
+    }
 
-//     let r = cfg_into_iter!(x.clone())
-//         .map(move |i| {
-//             let mut denominator = cfg_iter!(x)
-//                 .filter(|&j| &i != j)
-//                 .map(|&j| j - i)
-//                 .product::<F>();
-//             denominator.inverse_in_place().unwrap();
-
-//             // The numerator is of the form `x_1*x_2*...x_{i-1}*x_{i+1}*x_{i+2}*..` which is a product of all
-//             // `x` except `x_i` and thus can be calculated as \prod_{i}(x_i} * (1 / x_i)
-//             let numerator = product * i.inverse().unwrap();
-
-//             denominator * numerator
-//         })
-//         .collect::<Vec<_>>();
-//     Ok(r)
-// }
+    Ok(x_coords.iter().map(|i| basis[i - 1]).collect_vec())
+}
 
 pub fn babygiant_precomp(
     bits: usize,
