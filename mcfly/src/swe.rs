@@ -153,7 +153,7 @@ pub fn decrypt(
     Ok(msg)
 }
 
-fn sign<I: AsRef<[u8]>>(id: I, sk: Fr) -> Result<GAffine, anyhow::Error> {
+pub fn sign<I: AsRef<[u8]>>(id: I, sk: Fr) -> Result<GAffine, anyhow::Error> {
     let mapper = MapToCurveBasedHasher::<
         short_weierstrass::Projective<g1::Config>,
         DefaultFieldHasher<sha2::Sha256, 128>,
@@ -207,7 +207,7 @@ fn hash_pk_to_fr(p: &GAffine) -> anyhow::Result<Fr, SWEError> {
     Ok(Fr::from_le_bytes_mod_order(&d))
 }
 
-pub fn lagrange_basis_at_0_for_all<F: PrimeField>(
+fn lagrange_basis_at_0_for_all<F: PrimeField>(
     x_coords: &[usize],
 ) -> Result<Vec<F>, anyhow::Error> {
     let x = cfg_into_iter!(x_coords)
@@ -239,7 +239,7 @@ pub fn lagrange_basis_at_0_for_all<F: PrimeField>(
     Ok(r)
 }
 
-pub fn lagrange_basis_at_domain<F: PrimeField>(
+fn lagrange_basis_at_domain<F: PrimeField>(
     domain: &[F],
     x_coords: &[usize],
 ) -> Result<Vec<F>, anyhow::Error> {
@@ -318,8 +318,6 @@ mod tests {
 
         let msg = b"test_test";
         let id = b"88";
-
-        println!("msg: {:?}", msg);
 
         let ct = encrypt(&vks, id, msg, T, N, &mut rng, BLOCK_SIZE).unwrap();
 

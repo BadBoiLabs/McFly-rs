@@ -1,13 +1,13 @@
 [package]
 name = "mcfly"
-description = "Rust encryption library for practical time-lock encryption."
+description = "Verifiable Encryption to the Future Made Practical."
 version = "0.0.5"
-authors = ["Thibault Meunier <crates@thibault.uk>"]
+authors = ["timofey <timofey@chainsafe.io>"]
 edition = "2021"
 readme = "./README.md"
-homepage = "https://github.com/thibmeu/tlock-rs"
-repository = "https://github.com/thibmeu/tlock-rs"
-keywords = ["tlock", "cryptography", "encryption"]
+homepage = "https://github.com/BadBoiLabs/McFly-rs"
+repository = "https://github.com/BadBoiLabs/McFly-rs"
+keywords = ["time-lock", "cryptography", "encryption"]
 categories = ["cryptography"]
 license = "MIT"
 
@@ -42,6 +42,3 @@ pprof = { version = "0.11", features = ["criterion", "flamegraph"] }
 default = ["rfc9380"]
 rfc9380 = []
 
-[[bench]]
-name = "encrypt_decrypt"
-harness = false
